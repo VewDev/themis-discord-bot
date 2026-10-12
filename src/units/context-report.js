@@ -1,55 +1,104 @@
 // Reports the message to specified channel in config.json. Get the channel id by right clicking any channel on discord in developer mode, and copying the id.
 
-const { ApplicationCommandType, MessageFlags } = require('discord.js');
+const { ApplicationCommandType, ModalBuilder, TextInputBuilder, TextInputStyle, LabelBuilder, MessageFlags, EmbedBuilder } = require('discord.js');
 const { Unit } = require('../lib/units');
 const { GodotEmbedBuilder } = require('../lib/helpers');
 
 const unit = new Unit();
 
 unit.createContextMenuCommand()
-	.setName('Report Message to Staff')
-	.setRateLimit(10)
+	.setName('Quickly Report to Staff')
 	.setType(ApplicationCommandType.Message)
 	.setCallback(async interaction => {
-		const modChannel = unit.config.guildConfigs[interaction.guildId].modChannel;
-		const modRole = unit.config.guildConfigs[interaction.guildId].modRole;
-		const channel = interaction.client.channels.cache.get(modChannel);
-		const reportedMessage = interaction.targetMessage;
-		const embed = new GodotEmbedBuilder()
-			.setAuthor({ name: reportedMessage.author.username, iconURL: reportedMessage.author.avatarURL() ?? interaction.user.defaultAvatarURL })
-			.setDescription(reportedMessage.content || '-# no content');
-		const embeds = [embed];
-		const msg = `<@&${modRole}> New report created by <@${interaction.user.id}>\n\n`
-		+ `:link: Link: https://discord.com/channels/${interaction.guildId}/${interaction.channelId}/${interaction.targetId}\n`
-		+ `:bust_in_silhouette: Reported User: <@${reportedMessage.author.id}>\n`
-		+ ':speech_balloon: Reported Content:\n';
-		const files = [];
-		const largeFiles = [];
-		let uploadLimit = 1024 * 1024 * 8; // 8mb
-		switch (interaction.guild.premiumTier) {
-			case 2: uploadLimit = 1024 * 1024 * 50; break;
-			case 3: uploadLimit = 1024 * 1024 * 100; break;
-		}
-		uploadLimit = uploadLimit * 0.95; // small buffer
-		reportedMessage.attachments.forEach(attachment => {
-			if (attachment.size > uploadLimit) {
-				largeFiles.push(attachment.url);
-			} else {
-				files.push(attachment.url);
-			}
-		});
-		if (largeFiles.length > 0) {
-			let embedDescription = 'These files were too large to attach to this report:';
-			largeFiles.forEach(file => {
-				embedDescription += '\n' + file;
-			});
-			const largeFilesEmbed = new GodotEmbedBuilder()
-				.setTitle('Large Files')
-				.setDescription(embedDescription);
-			embeds.push(largeFilesEmbed);
-		}
-		channel.send({ content: msg, embeds: embeds, files: files });
-		await interaction.reply({ flags: MessageFlags.Ephemeral, content: 'Message has been reported. A staff member will check soon.' });
+
+		if (!interaction.isMessageContextMenuCommand()) return;
+
+		await sendMessage(interaction, "", interaction)
+
 	});
+
+
+unit.createContextMenuCommand()
+	.setName('Report Message with Context')
+	.setType(ApplicationCommandType.Message)
+	.setCallback(async interaction => {
+
+		if (!interaction.isMessageContextMenuCommand()) return;
+
+		// Create a modal to ask for additional context
+		const modal = new ModalBuilder()
+			.setCustomId(interaction.id)
+			.setTitle('Report User');
+		const contextInput = new TextInputBuilder()
+				.setCustomId('contextInput')
+				.setStyle(TextInputStyle.Paragraph)
+		const contextLabel = new LabelBuilder()
+			.setLabel("Additional context")
+			.setDescription('Add any context that may be useful for moderators when they see this message.')
+			.setTextInputComponent(contextInput);
+
+		// Show the modal
+		modal.addLabelComponents(contextLabel);
+		await interaction.showModal(modal);
+		const modalResponse = await interaction
+			.awaitModalSubmit({
+				time: 180_000,
+				filter: (modalSubmit) => 
+				{
+					if (modalSubmit.customId == interaction.id) return true;
+					return false;
+				}
+			})
+
+		
+		const contextResponse = modalResponse.fields.getTextInputValue('contextInput');
+
+
+		await sendMessage(interaction, contextResponse, modalResponse)
+	});
+
+async function sendMessage(interaction, contextResponse, responseInteraction) {
+
+	const modChannel = unit.config.guildConfigs[interaction.guildId].modChannel;
+	const modRole = unit.config.guildConfigs[interaction.guildId].modRole;
+
+	// Send message to mod channel
+	const channel = interaction.client.channels.cache.get(modChannel);
+	const reportedMessage = interaction.targetMessage;
+
+	let reporterEmbedText = ``
+		+ `:bust_in_silhouette: Created by: <@${interaction.user.id}>\n`
+		+ `:clock1: Report Time (localized): <t:${Math.floor(Date.now() / 1000)}:R>\n`
+
+	let regex = new RegExp("`", 'g');
+	contextResponse = contextResponse.replace(regex, '')
+	if (contextResponse != "") {
+
+		reporterEmbedText = reporterEmbedText
+			+ `## Additional Context Added:\n`
+			+ `\`\`\`${contextResponse}\`\`\``
+	}
+
+	const reporterEmbed = new GodotEmbedBuilder()
+		.setAuthor({ name: `Reporter: ` + interaction.user.username, iconURL: interaction.user.avatarURL() ?? interaction.user.defaultAvatarURL})
+		.setDescription(reporterEmbedText);
+	
+	const reportedEmbedText = `:gdbonk: Reported User: <@${reportedMessage.author.id}>\n`
+		+ `:map: Channel Name: \`${reportedMessage.channel.name}\`\n`
+		+ `:clock1: Message Time (localized): <t:${Math.floor(reportedMessage.createdTimestamp / 1000)}:R>`
+	
+	const reportedEmbed = new EmbedBuilder()
+		.setColor('#29292d')
+		.setAuthor({ name: `Reported: ` + reportedMessage.author.username, iconURL: reportedMessage.author.avatarURL() ?? reportedMessage.author.defaultAvatarURL})
+		.setDescription(reportedEmbedText);
+
+	const embeds = [ reporterEmbed, reportedEmbed ];
+
+	channel.send({ content: `<@&${modRole}> New Report Created`, embeds: embeds });
+
+	reportedMessage.forward(channel);
+
+	await responseInteraction.reply({ flags: MessageFlags.Ephemeral, content: 'Message has been reported. A staff member will check soon.' });
+}
 
 module.exports = unit;
